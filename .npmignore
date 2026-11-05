@@ -1,0 +1,15 @@
+# No publicar artefactos de desarrollo
+node_modules/
+.webcode/
+.webcode-profile/
+debug*.png
+debug-dom*.json
+*.log
+*.tgz
+coverage/
+.env
+.env.*
+.vscode/
+.idea/
+.git/
+.gitignore

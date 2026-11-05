@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Estado y perfil de webcode
+.webcode/
+.webcode-profile/
+
+# Debug y logs
+debug*.png
+debug-dom*.json
+*.log
+npm-debug.log*
+
+# Empaquetado / cobertura
+*.tgz
+coverage/
+
+# Variables de entorno
+.env
+.env.*
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,31 @@
+{
+  "name": "webcode",
+  "version": "0.1.0",
+  "description": "Agente de programación tipo OpenCode que usa la interfaz web de ChatGPT (Puppeteer) en vez de una API",
+  "type": "module",
+  "bin": {
+    "webcode": "./src/index.js"
+  },
+  "files": [
+    "src/*.js",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": [
+    "chatgpt",
+    "puppeteer",
+    "agent",
+    "cli",
+    "automation",
+    "codegen"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}
