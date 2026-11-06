@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { openBrowser, closeBrowser } from './browser.js';
 import { SEL as CHATGPT_SEL } from './chatgpt.js';
 import { SEL as GEMINI_SEL } from './gemini.js';
+import { SEL as DEEPSEEK_SEL } from './deepseek.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
@@ -26,6 +27,14 @@ const PROVIDERS = {
     sel: GEMINI_SEL,
     login: /accounts\.google\.com|signin|\/login/i,
     busy: /temporarily unavailable|no disponible temporalmente|try again|vuelve a intentarlo|high demand|demanda alta/i,
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    url: 'https://chat.deepseek.com/',
+    sel: DEEPSEEK_SEL,
+    login: /\/sign_in|\/signin|\/login|\/forgot_password|\/reset_password/i,
+    busy: /temporarily unavailable|no disponible temporalmente|try again|vuelve a intentarlo|high demand|demanda alta|servidor ocupado/i,
+    sendRequired: false,
   },
 };
 
@@ -132,7 +141,7 @@ async function probeOne(browser, name, { url, waitMs }) {
     const busy = cfg.busy.test(info.bodyText);
 
     for (const [key, g] of Object.entries(info.groups)) {
-      const required = key === 'input' || key === 'send';
+      const required = key === 'input' || (key === 'send' && cfg.sendRequired !== false);
       const ok = g.total > 0;
       const mark = ok ? green('✓') : required ? red('✘') : yellow('·');
       const detail = g.matches
@@ -141,7 +150,8 @@ async function probeOne(browser, name, { url, waitMs }) {
         .join(', ');
       const note = !ok && key === 'assistant' ? dim('  (normal en un chat vacío)') : '';
       const note2 = !ok && key === 'stop' ? dim('  (solo aparece mientras responde)') : '';
-      console.log(`  ${mark} ${key}: ${g.total}${detail ? dim(`  → ${detail}`) : ''}${note}${note2}`);
+      const note3 = !ok && key === 'send' && cfg.sendRequired === false ? dim('  (se envía con Enter)') : '';
+      console.log(`  ${mark} ${key}: ${g.total}${detail ? dim(`  → ${detail}`) : ''}${note}${note2}${note3}`);
     }
 
     if (login) console.log(yellow('  ⚠ Parece una pantalla de login: iniciá sesión una vez en ese proveedor.'));
@@ -151,7 +161,8 @@ async function probeOne(browser, name, { url, waitMs }) {
     fs.writeFileSync(out, JSON.stringify(info, null, 2));
     console.log(dim(`  DOM guardado en ${out}`));
 
-    const coreOk = info.groups.input.total > 0 && info.groups.send.total > 0;
+    const sendOk = info.groups.send.total > 0 || cfg.sendRequired === false;
+    const coreOk = info.groups.input.total > 0 && sendOk;
     return coreOk && !login;
   } finally {
     await page.close().catch(() => {});

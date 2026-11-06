@@ -1,18 +1,29 @@
 # webcode
 
-Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT (o Gemini) con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
+Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT (o Gemini/DeepSeek) con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
 
-## Proveedores: ChatGPT y Gemini
+## Proveedores: ChatGPT, Gemini y DeepSeek
 
 ```bash
-webcode --provider gemini "crea una API REST con Express"   # usa Gemini
-webcode --provider chatgpt --fallback gemini "tu tarea"     # ChatGPT y, si falla, Gemini
-webcode --fallback gemini                                   # chat interactivo con respaldo
+webcode --provider gemini "crea una API REST con Express"        # usa Gemini
+webcode --provider deepseek "tu tarea"                           # usa DeepSeek
+webcode --provider chatgpt --fallback gemini,deepseek "tu tarea" # ChatGPT y respaldos en orden
+webcode --fallback gemini                                        # chat interactivo con respaldo
 ```
 
-- `--provider chatgpt|gemini` elige el proveedor principal (por defecto `chatgpt`).
-- `--fallback gemini` (o `chatgpt`) permite continuar en otro proveedor si el principal falla o se queda sin cuota. Al cambiar, webcode abre un chat nuevo y le pasa el contexto acumulado.
+- `--provider chatgpt|gemini|deepseek` elige el proveedor principal (por defecto `chatgpt`).
+- El respaldo es automático: si no pasás `--fallback`, webcode usa otro proveedor (ChatGPT→Gemini, Gemini→ChatGPT, DeepSeek→Gemini). Podés elegir otro con `--fallback` o desactivarlo con `--fallback none`.
+- Al cambiar, webcode abre un chat nuevo y le pasa el contexto acumulado.
+- Si el proveedor pide esperar (“revisión rápida… vuelve a intentarlo en 1 minuto”) y hay respaldo, **cambia al respaldo al instante**; si no hay respaldo, espera y reintenta.
 - Necesitás iniciar sesión una vez en cada proveedor que uses; la sesión queda en el mismo perfil de Chrome (`~/.webcode-profile`).
+
+### DeepSeek
+
+La primera vez, webcode abre `chat.deepseek.com` y espera (hasta 10 min) a que inicies sesión a mano. Si no hay sesión y DeepSeek está configurado como respaldo, falla rápido para no colgar la tarea. Después de iniciar sesión, verificá los selectores con:
+
+```bash
+webcode --provider deepseek --probe
+```
 
 ## Instalación
 
@@ -51,15 +62,15 @@ webcode "crea una API REST con Express y una ruta /health"
 webcode --dir "C:\ruta\a\mi-proyecto" "tu tarea"
 ```
 
-La primera vez se abre Chrome: **inicia sesión en el proveedor que uses** (ChatGPT y/o Gemini) una sola vez. La sesión queda guardada en `~/.webcode-profile`.
+La primera vez se abre Chrome: **inicia sesión en el proveedor que uses** (ChatGPT, Gemini y/o DeepSeek) una sola vez. La sesión queda guardada en `~/.webcode-profile`.
 
 ### Opciones
 
 | Opción | Descripción |
 |---|---|
 | `--dir <ruta>` | Directorio del proyecto (por defecto el actual) |
-| `--provider <p>` | Proveedor principal: `chatgpt` o `gemini` (por defecto `chatgpt`) |
-| `--fallback <p>` | Proveedor(es) de respaldo, separados por coma |
+| `--provider <p>` | Proveedor principal: `chatgpt`, `gemini` o `deepseek` (por defecto `chatgpt`) |
+| `--fallback <p>` | Respaldo automático, separado por coma (`gemini,deepseek`). Por defecto usa el otro proveedor; `none` lo desactiva |
 | `--connect <url>` | Conectarse a un Chrome ya abierto (ver abajo) |
 | `--profile <ruta>` | Perfil persistente de Chrome |
 | `--yes`, `-y` | Ejecutar comandos sin pedir confirmación |
@@ -82,7 +93,7 @@ webcode --dir ./mi-proyecto --spec ./mi-proyecto/SPEC.md --parallel 2 -y
 ```
 
 - El spec se trocea por encabezados markdown (y por tamaño si una sección es enorme), sin mandarle todo junto a ChatGPT.
-- Cada sección se trabaja como una tarea independiente, en un chat propio. Con `--parallel 2` se abren dos pestañas/chats y avanzan a la vez. Cada worker tiene su propio proveedor y failover: si uno cambia a Gemini, los demás no se ven afectados.
+- Cada sección se trabaja como una tarea independiente, en un chat propio. Con `--parallel 2` se abren dos pestañas/chats y avanzan a la vez. Cada worker tiene su propio proveedor y failover: si uno cambia de proveedor, los demás no se ven afectados.
 - Las escrituras se serializan por archivo y los comandos `run` se ejecutan de a uno para evitar choques entre workers.
 - El progreso se guarda en `.webcode/state.json` (secciones hechas, archivos y resúmenes). Si algo falla, `--resume` retoma solo lo pendiente.
 - Al terminar todas las secciones, un chat hace una verificación final (tests/build/completar faltantes).
@@ -111,11 +122,14 @@ webcode --provider gemini --probe
 webcode --provider chatgpt --fallback gemini --probe
 ```
 
-Muestra qué selectores de `input`, `send`, `stop` y `assistant` matchean, avisa si hay una pantalla de login o un aviso temporal, y guarda el DOM en `debug-probe-chatgpt.json` / `debug-probe-gemini.json`. Escribe un texto de prueba en el cuadro (sin enviarlo) porque en Gemini el botón de enviar aparece recién al escribir. `stop` y `assistant` solo se pueden validar con una respuesta real.
+Muestra qué selectores de `input`, `send`, `stop` y `assistant` matchean, avisa si hay una pantalla de login o un aviso temporal, y guarda el DOM en `debug-probe-<proveedor>.json`. Escribe un texto de prueba en el cuadro (sin enviarlo) porque en Gemini el botón de enviar aparece recién al escribir. `stop` y `assistant` solo se pueden validar con una respuesta real.
 
 ### Avisos temporales (“revisión rápida… vuelve a intentarlo en 1 minuto”)
 
-Cuando el proveedor muestra un aviso temporal (revisión rápida, alta demanda, servicio no disponible), `webcode` **no aborta**: espera `--busy-wait` segundos y reintenta el mismo mensaje hasta `--busy-retries` veces, conservando la conversación. Si se agotan los reintentos y hay `--fallback`, cambia de proveedor y continúa con el contexto acumulado.
+Cuando el proveedor muestra un aviso temporal (revisión rápida, alta demanda, servicio no disponible), `webcode` **no aborta**:
+
+- Si hay `--fallback`, cambia al siguiente proveedor **de inmediato** y continúa con el contexto acumulado.
+- Si no hay respaldo, espera `--busy-wait` segundos y reintenta el mismo mensaje hasta `--busy-retries` veces, conservando la conversación.
 
 ## Si ChatGPT detecta la automatización (captcha / Cloudflare)
 
@@ -189,7 +203,7 @@ Desde GitHub se instala con `npm install -g github:USUARIO/webcode` (no con `npm
 
 ## Limitaciones
 
-- **Selectores frágiles**: si ChatGPT o Gemini cambian su HTML, edita `SEL` al inicio de `src/chatgpt.js` o `src/gemini.js`.
+- **Selectores frágiles**: si ChatGPT, Gemini o DeepSeek cambian su HTML, edita `SEL` al inicio de `src/chatgpt.js`, `src/gemini.js` o `src/deepseek.js` (y verificá con `--probe`).
 - Automatizar la interfaz web puede ir contra los términos de uso de OpenAI y puede dispararle límites de uso o captchas. Úsalo bajo tu responsabilidad y con tu propia cuenta.
 - Respuestas muy largas pueden cortarse; si pasa, el agente avisa del bloque truncado y ChatGPT lo reenvía.
 - ChatGPT puede ignorar el formato a veces; el programa reintenta hasta 2 veces.

@@ -1,12 +1,14 @@
-// Gestor de proveedores web: elige ChatGPT o Gemini, reintenta avisos temporales
-// y puede cambiar al proveedor de respaldo si el actual deja de responder.
+// Gestor de proveedores web: elige ChatGPT, Gemini o DeepSeek, reintenta avisos
+// temporales y puede cambiar al proveedor de respaldo si el actual deja de responder.
 import { ChatGPT } from './chatgpt.js';
 import { Gemini } from './gemini.js';
+import { DeepSeek } from './deepseek.js';
 import { openBrowser, closeBrowser } from './browser.js';
 
-const PROVIDERS = {
+export const PROVIDERS = {
   chatgpt: { cls: ChatGPT, url: 'https://chatgpt.com/', label: 'ChatGPT' },
   gemini: { cls: Gemini, url: 'https://gemini.google.com/app', label: 'Gemini' },
+  deepseek: { cls: DeepSeek, url: 'https://chat.deepseek.com/', label: 'DeepSeek' },
 };
 
 const ALIASES = {
@@ -14,13 +16,15 @@ const ALIASES = {
   openai: 'chatgpt',
   google: 'gemini',
   bard: 'gemini',
+  ds: 'deepseek',
+  deep: 'deepseek',
 };
 
 export function normalizeProvider(name = 'chatgpt') {
   const n = String(name).trim().toLowerCase();
   const key = ALIASES[n] || n;
   if (!PROVIDERS[key]) {
-    throw new Error(`Proveedor desconocido: "${name}". Usá "chatgpt" o "gemini".`);
+    throw new Error(`Proveedor desconocido: "${name}". Usá "chatgpt", "gemini" o "deepseek".`);
   }
   return key;
 }
@@ -34,7 +38,7 @@ function fail(message, code) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 
-const FAILOVER_CODES = new Set(['BUSY', 'RESPONSE', 'COMPOSER', 'SEND', 'DOM']);
+const FAILOVER_CODES = new Set(['BUSY', 'RESPONSE', 'COMPOSER', 'SEND', 'DOM', 'LOGIN']);
 
 export class ProviderManager {
   constructor({
@@ -47,11 +51,14 @@ export class ProviderManager {
     busyRetries = 3,
   } = {}) {
     const primary = normalizeProvider(provider);
-    const rest = String(fallback || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map(normalizeProvider);
+    const rawFallback = String(fallback || '').trim();
+    const rest = /^(none|off|no|-)$/i.test(rawFallback)
+      ? []
+      : rawFallback
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(normalizeProvider);
     this.names = [primary, ...rest].filter((v, i, a) => a.indexOf(v) === i);
     this.connect = connect;
     this.profileDir = profileDir;
@@ -137,13 +144,17 @@ export class ProviderManager {
             url: this.#urlFor(index),
             browser: this.browser,
             owned: false, // el navegador lo cierra ProviderManager
+            // El proveedor principal puede esperar a que el usuario inicie sesión;
+            // un respaldo debe fallar rápido para no colgar la tarea.
+            allowLoginWait: !this.freshPages && index === 0,
           });
         }
         this.instances.set(name, inst);
         this.instance = inst;
         return inst;
       } catch (e) {
-        if (e.code === 'BUSY' && attempt < this.busyRetries) {
+        // Si hay un proveedor de respaldo, no esperamos: cambiamos al instante.
+        if (e.code === 'BUSY' && !this.hasNext && attempt < this.busyRetries) {
           const delay = this.#busyDelay();
           console.log(dim(`⏳ ${e.message}`));
           console.log(dim(`   Reintentando en ${Math.round(delay / 1000)}s (${attempt + 1}/${this.busyRetries})...`));
@@ -166,16 +177,23 @@ export class ProviderManager {
       try {
         reply = await this.instance.ask(text);
       } catch (e) {
-        if (e.code === 'BUSY' && attempt < this.busyRetries) {
+        if (e.code === 'BUSY' && this.hasNext) {
+          // "Revisión rápida / volvé en 1 minuto" con respaldo: no esperamos.
+          console.log(dim('↪ El proveedor pidió esperar; cambio inmediato al respaldo.'));
+          switchReason = e.message;
+          switchCode = e.code;
+        } else if (e.code === 'BUSY' && attempt < this.busyRetries) {
           const delay = this.#busyDelay();
           console.log(dim(`⏳ ${e.message}`));
           console.log(dim(`   Reintentando en ${Math.round(delay / 1000)}s (${attempt + 1}/${this.busyRetries})...`));
           await sleep(delay);
           continue;
+        } else if (FAILOVER_CODES.has(e.code) && this.hasNext) {
+          switchReason = e.message;
+          switchCode = e.code;
+        } else {
+          throw e;
         }
-        if (!(FAILOVER_CODES.has(e.code) && this.hasNext)) throw e;
-        switchReason = e.message;
-        switchCode = e.code;
       }
 
       if (switchReason || (reply?.limit && this.hasNext)) {

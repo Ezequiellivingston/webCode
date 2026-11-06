@@ -3,7 +3,7 @@
 import readline from 'node:readline/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ProviderManager, normalizeProvider } from './provider.js';
+import { ProviderManager, normalizeProvider, PROVIDERS } from './provider.js';
 import { probeProviders } from './probe.js';
 import { parseActions, execute, listTree } from './tools.js';
 import {
@@ -35,13 +35,13 @@ const opt = (name, def) => {
 };
 
 if (flag('--help') || flag('-h')) {
-  console.log(`webcode - agente de programación vía ChatGPT/Gemini web
+  console.log(`webcode - agente de programación vía ChatGPT/Gemini/DeepSeek web
 
 Uso: webcode [opciones] ["tarea inicial"]
 
   --dir <ruta>       Directorio del proyecto (por defecto: el actual)
-  --provider <p>     Proveedor principal: chatgpt | gemini (por defecto: chatgpt)
-  --fallback <p>     Proveedor(es) de respaldo, separados por coma (ej. gemini)
+  --provider <p>     Proveedor principal: chatgpt | gemini | deepseek (por defecto: chatgpt)
+  --fallback <p>     Respaldo automático, separados por coma (por defecto el otro proveedor; "none" para desactivar)
   --connect <url>    Conectarse a un Chrome ya abierto (ej. http://127.0.0.1:9222)
   --profile <ruta>   Perfil de Chrome persistente (por defecto: ~/.webcode-profile)
   --yes, -y          Ejecutar comandos sin pedir confirmación (sin -y se pregunta una sola vez)
@@ -73,7 +73,9 @@ try {
   console.error(c.red(e.message));
   process.exit(1);
 }
-const fallback = opt('--fallback', '');
+const DEFAULT_FALLBACK = { chatgpt: 'gemini', gemini: 'chatgpt', deepseek: 'gemini' };
+const explicitFallback = args.includes('--fallback');
+const fallback = opt('--fallback', DEFAULT_FALLBACK[provider] || '');
 const url = opt('--url');
 const valueFlags = new Set([
   '--dir',
@@ -107,7 +109,22 @@ const parallel = intOpt('--parallel', 2);
 const resumeMode = flag('--resume');
 
 if (flag('--probe')) {
-  const list = [...new Set([provider, ...String(fallback || '').split(',').map((s) => s.trim()).filter(Boolean).map(normalizeProvider)])];
+  let list;
+  try {
+    const rawFallback = String(fallback || '').trim();
+    const extra =
+      explicitFallback && !/^(none|off|no|-)$/i.test(rawFallback)
+        ? rawFallback
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map(normalizeProvider)
+        : [];
+    list = [...new Set([provider, ...extra])];
+  } catch (e) {
+    console.error(c.red(e.message));
+    process.exit(1);
+  }
   const ok = await probeProviders({
     providers: list,
     connect,
@@ -148,7 +165,7 @@ const confirm = (q) => {
 const log = (s) => console.log(s);
 
 console.log(c.bold('webcode') + c.dim(`  · proyecto: ${root}`));
-const providerLabel = provider === 'gemini' ? 'Gemini' : 'ChatGPT';
+const providerLabel = PROVIDERS[provider].label;
 console.log(c.dim(`Abriendo ${providerLabel} en el navegador...`));
 if (fallback) console.log(c.dim(`Proveedor(es) de respaldo: ${fallback}`));
 
