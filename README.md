@@ -1,28 +1,31 @@
 # webcode
 
-Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT (o Gemini/DeepSeek) con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
+Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT, Gemini, Claude o DeepSeek con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
 
-## Proveedores: ChatGPT, Gemini y DeepSeek
+## Proveedores: ChatGPT, Gemini, Claude y DeepSeek
 
 ```bash
-webcode --provider gemini "crea una API REST con Express"        # usa Gemini
-webcode --provider deepseek "tu tarea"                           # usa DeepSeek
-webcode --provider chatgpt --fallback gemini,deepseek "tu tarea" # ChatGPT y respaldos en orden
-webcode --fallback gemini                                        # chat interactivo con respaldo
+webcode "crea una API REST con Express"                          # router automático
+webcode --provider claude "refactorizá este módulo y agregá tests" # proveedor fijo
+webcode --provider gemini "tu tarea"                             # proveedor fijo
+webcode --provider chatgpt --fallback gemini,claude "tu tarea"    # principal + respaldos
+webcode --fallback none "tu tarea"                               # sin respaldo
 ```
 
-- `--provider chatgpt|gemini|deepseek` elige el proveedor principal (por defecto `chatgpt`).
-- El respaldo es automático: si no pasás `--fallback`, webcode usa otro proveedor (ChatGPT→Gemini, Gemini→ChatGPT, DeepSeek→Gemini). Podés elegir otro con `--fallback` o desactivarlo con `--fallback none`.
-- Al cambiar, webcode abre un chat nuevo y le pasa el contexto acumulado.
+- **Router automático (por defecto)**: elige el proveedor según la tarea y el contexto real (tamaño del proyecto/spec). Ejemplos: specs enormes → Gemini; razonamiento/matemática → DeepSeek; documentación → Claude; código/tests → ChatGPT/Claude. Se calcula al arrancar (tarea inicial o `--spec`) y, en modo interactivo sin tarea inicial, con la primera tarea que escribas.
+- `--provider chatgpt|gemini|claude|deepseek` fija el proveedor y desactiva el router.
+- El respaldo también es automático: por defecto usa el resto del orden del router. Podés fijarlo con `--fallback` o desactivarlo con `--fallback none`.
+- Al cambiar de proveedor, webcode abre un chat nuevo y le pasa el contexto acumulado (tarea, árbol real del proyecto, archivos modificados, últimos resultados y próximo paso).
 - Si el proveedor pide esperar (“revisión rápida… vuelve a intentarlo en 1 minuto”) y hay respaldo, **cambia al respaldo al instante**; si no hay respaldo, espera y reintenta.
 - Necesitás iniciar sesión una vez en cada proveedor que uses; la sesión queda en el mismo perfil de Chrome (`~/.webcode-profile`).
 
-### DeepSeek
+### Login por proveedor
 
-La primera vez, webcode abre `chat.deepseek.com` y espera (hasta 10 min) a que inicies sesión a mano. Si no hay sesión y DeepSeek está configurado como respaldo, falla rápido para no colgar la tarea. Después de iniciar sesión, verificá los selectores con:
+La primera vez que uses un proveedor explícito (`--provider claude`), webcode abre su página y espera (hasta 10 min) a que inicies sesión a mano. Un proveedor elegido por el router o usado como respaldo **falla rápido** si no hay sesión, para no colgar la tarea; en ese caso usa `--provider` una vez para loguearte. Después verificá los selectores con:
 
 ```bash
 webcode --provider deepseek --probe
+webcode --provider claude --probe
 ```
 
 ## Instalación
@@ -69,8 +72,8 @@ La primera vez se abre Chrome: **inicia sesión en el proveedor que uses** (Chat
 | Opción | Descripción |
 |---|---|
 | `--dir <ruta>` | Directorio del proyecto (por defecto el actual) |
-| `--provider <p>` | Proveedor principal: `chatgpt`, `gemini` o `deepseek` (por defecto `chatgpt`) |
-| `--fallback <p>` | Respaldo automático, separado por coma (`gemini,deepseek`). Por defecto usa el otro proveedor; `none` lo desactiva |
+| `--provider <p>` | `chatgpt`, `gemini`, `claude`, `deepseek` o `auto` (por defecto `auto`) |
+| `--fallback <p>` | Respaldo automático, separado por coma (`gemini,claude`). Por defecto usa el orden del router; `none` lo desactiva |
 | `--connect <url>` | Conectarse a un Chrome ya abierto (ver abajo) |
 | `--profile <ruta>` | Perfil persistente de Chrome |
 | `--yes`, `-y` | Ejecutar comandos sin pedir confirmación |
@@ -148,7 +151,7 @@ node src/index.js --connect http://127.0.0.1:9222
 
 ## Cómo funciona
 
-1. `chatgpt.js` / `gemini.js` pegan tu mensaje en el cuadro de chat, lo envían y esperan a que termine de generar.
+1. `chatgpt.js` / `gemini.js` / `claude.js` / `deepseek.js` pegan tu mensaje en el cuadro de chat, lo envían y esperan a que termine de generar.
 2. El primer mensaje incluye instrucciones (`prompt.js`) para que el proveedor responda con un bloque de código `webcode` con acciones:
    `write_file`, `edit_file`, `run`, `read`, `list`, `done`.
 3. `tools.js` interpreta esas acciones y las ejecuta en tu carpeta (con rutas restringidas al proyecto).
@@ -203,7 +206,8 @@ Desde GitHub se instala con `npm install -g github:USUARIO/webcode` (no con `npm
 
 ## Limitaciones
 
-- **Selectores frágiles**: si ChatGPT, Gemini o DeepSeek cambian su HTML, edita `SEL` al inicio de `src/chatgpt.js`, `src/gemini.js` o `src/deepseek.js` (y verificá con `--probe`).
+- **Selectores frágiles**: si ChatGPT, Gemini, Claude o DeepSeek cambian su HTML, edita `SEL` al inicio de `src/chatgpt.js`, `src/gemini.js`, `src/claude.js` o `src/deepseek.js` (y verificá con `--probe`).
+- **El router es heurístico**: usa palabras clave y tamaño de contexto; no conoce el modelo exacto detrás de cada web. Si no te gusta la elección, fijá `--provider`.
 - Automatizar la interfaz web puede ir contra los términos de uso de OpenAI y puede dispararle límites de uso o captchas. Úsalo bajo tu responsabilidad y con tu propia cuenta.
 - Respuestas muy largas pueden cortarse; si pasa, el agente avisa del bloque truncado y ChatGPT lo reenvía.
 - ChatGPT puede ignorar el formato a veces; el programa reintenta hasta 2 veces.

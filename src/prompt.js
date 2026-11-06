@@ -6,7 +6,7 @@ export function buildFirstMessage(task, root, tree) {
   return `Eres un agente de programación autónomo. Trabajas sobre un proyecto LOCAL mediante un programa intermediario ("webcode") que lee tus respuestas y ejecuta las acciones que escribas. Tú no tienes acceso directo al disco.
 
 REGLAS IMPORTANTES
-- NO uses Canvas, ni búsqueda web, ni generación de archivos descargables, ni el intérprete de código del proveedor. Todo se hace SOLO con las acciones de abajo.
+- NO uses Canvas, Artifacts, ni búsqueda web, ni generación de archivos descargables, ni el intérprete de código del proveedor. Todo se hace SOLO con las acciones de abajo.
 - Pon TODAS las acciones dentro de UN único bloque de código con cuatro backticks y lenguaje "webcode", así:
 
 ${F}webcode

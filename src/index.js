@@ -4,6 +4,7 @@ import readline from 'node:readline/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ProviderManager, normalizeProvider, PROVIDERS } from './provider.js';
+import { chooseProviders, PROVIDER_ORDER } from './router.js';
 import { probeProviders } from './probe.js';
 import { parseActions, execute, listTree } from './tools.js';
 import {
@@ -40,8 +41,8 @@ if (flag('--help') || flag('-h')) {
 Uso: webcode [opciones] ["tarea inicial"]
 
   --dir <ruta>       Directorio del proyecto (por defecto: el actual)
-  --provider <p>     Proveedor principal: chatgpt | gemini | deepseek (por defecto: chatgpt)
-  --fallback <p>     Respaldo automático, separados por coma (por defecto el otro proveedor; "none" para desactivar)
+  --provider <p>     chatgpt | gemini | claude | deepseek | auto (por defecto: auto)
+  --fallback <p>     Respaldo automático, separados por coma (por defecto el orden del router; "none" para desactivar)
   --connect <url>    Conectarse a un Chrome ya abierto (ej. http://127.0.0.1:9222)
   --profile <ruta>   Perfil de Chrome persistente (por defecto: ~/.webcode-profile)
   --yes, -y          Ejecutar comandos sin pedir confirmación (sin -y se pregunta una sola vez)
@@ -66,16 +67,6 @@ const root = path.resolve(opt('--dir', process.cwd()));
 let autoYes = flag('--yes') || flag('-y');
 const profileDir = path.resolve(opt('--profile', path.join(os.homedir(), '.webcode-profile')));
 const connect = opt('--connect');
-let provider;
-try {
-  provider = normalizeProvider(opt('--provider', 'chatgpt'));
-} catch (e) {
-  console.error(c.red(e.message));
-  process.exit(1);
-}
-const DEFAULT_FALLBACK = { chatgpt: 'gemini', gemini: 'chatgpt', deepseek: 'gemini' };
-const explicitFallback = args.includes('--fallback');
-const fallback = opt('--fallback', DEFAULT_FALLBACK[provider] || '');
 const url = opt('--url');
 const valueFlags = new Set([
   '--dir',
@@ -108,19 +99,63 @@ const specArg = opt('--spec');
 const parallel = intOpt('--parallel', 2);
 const resumeMode = flag('--resume');
 
+// ---- proveedor principal (explícito o router automático) ----
+const rawFallbackArg = opt('--fallback', '');
+const explicitFallback = args.includes('--fallback');
+const parseFallback = (raw) => {
+  const s = String(raw || '').trim();
+  return /^(none|off|no|-)$/i.test(s) ? '' : s;
+};
+
+const providerArg = String(opt('--provider', 'auto')).trim();
+const autoProvider = /^(auto|)$/i.test(providerArg);
+
+let provider;
+let fallback = '';
+let route = null;
+
+if (autoProvider) {
+  let specText = '';
+  if (specArg) {
+    try {
+      specText = (await loadSpec(path.resolve(specArg))).text;
+    } catch {}
+  }
+  let tree = '';
+  try {
+    tree = await listTree(root);
+  } catch {}
+  route = chooseProviders({ task: initialTask, specText, tree, messageChars: maxMessage });
+  provider = route.primary;
+  fallback = explicitFallback ? parseFallback(rawFallbackArg) : route.order.slice(1).join(',');
+} else {
+  try {
+    provider = normalizeProvider(providerArg);
+  } catch (e) {
+    console.error(c.red(e.message));
+    process.exit(1);
+  }
+  fallback = explicitFallback
+    ? parseFallback(rawFallbackArg)
+    : PROVIDER_ORDER.find((n) => n !== provider) || '';
+}
+
 if (flag('--probe')) {
   let list;
   try {
-    const rawFallback = String(fallback || '').trim();
-    const extra =
-      explicitFallback && !/^(none|off|no|-)$/i.test(rawFallback)
-        ? rawFallback
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-            .map(normalizeProvider)
-        : [];
-    list = [...new Set([provider, ...extra])];
+    const parsedFallback = parseFallback(fallback);
+    const extra = parsedFallback
+      ? parsedFallback
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(normalizeProvider)
+      : [];
+    list = explicitFallback
+      ? [...new Set([provider, ...extra])]
+      : autoProvider
+        ? route.order
+        : [provider];
   } catch (e) {
     console.error(c.red(e.message));
     process.exit(1);
@@ -166,8 +201,9 @@ const log = (s) => console.log(s);
 
 console.log(c.bold('webcode') + c.dim(`  · proyecto: ${root}`));
 const providerLabel = PROVIDERS[provider].label;
+if (route) console.log(c.dim(`Router: ${route.reason}`));
 console.log(c.dim(`Abriendo ${providerLabel} en el navegador...`));
-if (fallback) console.log(c.dim(`Proveedor(es) de respaldo: ${fallback}`));
+if (fallback) console.log(c.dim(`Cadena de respaldo: ${fallback}`));
 
 let gpt;
 try {
@@ -179,13 +215,16 @@ try {
     url,
     busyWaitMs,
     busyRetries,
+    allowPrimaryLoginWait: !autoProvider,
   });
 } catch (e) {
   console.error(c.red(`No pude abrir ${providerLabel}: ` + e.message));
+  console.error(c.dim('Probá con --provider <chatgpt|gemini|claude|deepseek> o iniciá sesión en el proveedor.'));
   process.exit(1);
 }
 
 let firstTurn = true;
+let autoRouted = !autoProvider || Boolean(initialTask || specArg);
 const changed = new Set();
 let lastResults = [];
 let sentChars = 0;
@@ -237,6 +276,25 @@ async function send(message, task, { forceRotate = false } = {}) {
 }
 
 async function runTask(task) {
+  // En modo interactivo sin tarea inicial, el router decide con la primera tarea.
+  if (autoProvider && !autoRouted) {
+    autoRouted = true;
+    const r = chooseProviders({ task, tree: await listTree(root), messageChars: maxMessage });
+    console.log(c.dim(`Router: ${r.reason}`));
+    if (r.primary !== gpt.name) {
+      try {
+        await gpt.switchTo(r.primary);
+        firstTurn = true;
+        changed.clear();
+        lastResults = [];
+        sentChars = 0;
+        stepsSinceRotate = 0;
+      } catch (e) {
+        console.log(c.dim(`Router: no pude usar ${PROVIDERS[r.primary].label} (${e.message}); sigo con ${gpt.label}.`));
+      }
+    }
+  }
+
   let message = firstTurn
     ? buildFirstMessage(task, root, await listTree(root))
     : buildTaskMessage(task);

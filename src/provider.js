@@ -2,12 +2,14 @@
 // temporales y puede cambiar al proveedor de respaldo si el actual deja de responder.
 import { ChatGPT } from './chatgpt.js';
 import { Gemini } from './gemini.js';
+import { Claude } from './claude.js';
 import { DeepSeek } from './deepseek.js';
 import { openBrowser, closeBrowser } from './browser.js';
 
 export const PROVIDERS = {
   chatgpt: { cls: ChatGPT, url: 'https://chatgpt.com/', label: 'ChatGPT' },
   gemini: { cls: Gemini, url: 'https://gemini.google.com/app', label: 'Gemini' },
+  claude: { cls: Claude, url: 'https://claude.ai/new', label: 'Claude' },
   deepseek: { cls: DeepSeek, url: 'https://chat.deepseek.com/', label: 'DeepSeek' },
 };
 
@@ -16,6 +18,7 @@ const ALIASES = {
   openai: 'chatgpt',
   google: 'gemini',
   bard: 'gemini',
+  anthropic: 'claude',
   ds: 'deepseek',
   deep: 'deepseek',
 };
@@ -24,7 +27,7 @@ export function normalizeProvider(name = 'chatgpt') {
   const n = String(name).trim().toLowerCase();
   const key = ALIASES[n] || n;
   if (!PROVIDERS[key]) {
-    throw new Error(`Proveedor desconocido: "${name}". Usá "chatgpt", "gemini" o "deepseek".`);
+    throw new Error(`Proveedor desconocido: "${name}". Usá "chatgpt", "gemini", "claude" o "deepseek".`);
   }
   return key;
 }
@@ -49,6 +52,7 @@ export class ProviderManager {
     url,
     busyWaitMs = 65000,
     busyRetries = 3,
+    allowPrimaryLoginWait = true,
   } = {}) {
     const primary = normalizeProvider(provider);
     const rawFallback = String(fallback || '').trim();
@@ -63,8 +67,11 @@ export class ProviderManager {
     this.connect = connect;
     this.profileDir = profileDir;
     this.url = url;
+    // --url solo aplica al proveedor principal configurado, no a los respaldos.
+    this.urlByName = url ? { [primary]: url } : {};
     this.busyWaitMs = busyWaitMs;
     this.busyRetries = busyRetries;
+    this.allowPrimaryLoginWait = allowPrimaryLoginWait;
 
     this.index = 0;
     this.instance = null;
@@ -99,8 +106,8 @@ export class ProviderManager {
   }
 
   #urlFor(index) {
-    const cfg = PROVIDERS[this.names[index]];
-    return (index === 0 && this.url) || cfg.url;
+    const name = this.names[index];
+    return this.urlByName[name] || PROVIDERS[name].url;
   }
 
   #busyDelay() {
@@ -132,7 +139,7 @@ export class ProviderManager {
     if (this.freshPages) {
       const page = await this.browser.newPage();
       await page.bringToFront().catch(() => {});
-      inst = new cfg.cls(this.browser, page, this.#urlFor(index), false);
+      inst = new cfg.cls(this.browser, page, this.#urlFor(index), false, false);
     }
 
     for (let attempt = 0; ; attempt++) {
@@ -144,9 +151,9 @@ export class ProviderManager {
             url: this.#urlFor(index),
             browser: this.browser,
             owned: false, // el navegador lo cierra ProviderManager
-            // El proveedor principal puede esperar a que el usuario inicie sesión;
-            // un respaldo debe fallar rápido para no colgar la tarea.
-            allowLoginWait: !this.freshPages && index === 0,
+            // El proveedor principal explícito puede esperar a que el usuario inicie
+            // sesión; con routing automático o como respaldo, fallamos rápido.
+            allowLoginWait: !this.freshPages && index === 0 && this.allowPrimaryLoginWait,
           });
         }
         this.instances.set(name, inst);
@@ -210,6 +217,22 @@ export class ProviderManager {
     return this.instance.newChat();
   }
 
+  // Cambia el proveedor activo (usado por el router antes de empezar una tarea).
+  async switchTo(name) {
+    const target = normalizeProvider(name);
+    if (target === this.name) return;
+    this.names = [target, ...this.names.filter((n) => n !== target)];
+    this.index = 0;
+    this.instance = null;
+    console.log(dim(`   [debug] cambiando a ${PROVIDERS[target].label}`));
+    try {
+      await this.ensure();
+    } catch (e) {
+      if (!(FAILOVER_CODES.has(e.code) && this.hasNext)) throw e;
+      await this.#switchNext(e.message, e.code);
+    }
+  }
+
   // Crea una sesión aislada para un worker: pestaña propia, proveedor propio y
   // su propio failover. Así un worker no cambia de proveedor a los demás.
   async spawnWorker() {
@@ -223,11 +246,13 @@ export class ProviderManager {
       url: this.url,
       busyWaitMs: this.busyWaitMs,
       busyRetries: this.busyRetries,
+      allowPrimaryLoginWait: false,
     });
     w.browser = this.browser;
     w.owned = false;
     w.freshPages = true;
     w.index = this.index;
+    w.urlByName = { ...this.urlByName };
 
     try {
       await w.ensure();

@@ -1,7 +1,7 @@
 {
   "name": "webcode",
   "version": "0.1.0",
-  "description": "Agente de programación tipo OpenCode que usa la interfaz web de ChatGPT, Gemini o DeepSeek (Puppeteer) en vez de una API",
+  "description": "Agente de programación tipo OpenCode que usa la interfaz web de ChatGPT, Gemini, Claude o DeepSeek (Puppeteer) en vez de una API",
   "type": "module",
   "bin": {
     "webcode": "src/index.js"
@@ -15,6 +15,9 @@
   },
   "keywords": [
     "chatgpt",
+    "gemini",
+    "claude",
+    "deepseek",
     "puppeteer",
     "agent",
     "cli",

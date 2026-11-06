@@ -114,23 +114,45 @@ export function readGeminiState() {
 }
 
 export class Gemini {
-  constructor(browser, page, url, owned) {
+  constructor(browser, page, url, owned, allowLoginWait = false) {
     this.browser = browser;
     this.page = page;
     this.url = url;
     this.owned = owned;
+    this.allowLoginWait = allowLoginWait;
   }
 
-  static async open({ connect, profileDir, url = 'https://gemini.google.com/app', browser, owned = false } = {}) {
+  static async open({
+    connect,
+    profileDir,
+    url = 'https://gemini.google.com/app',
+    browser,
+    owned = false,
+    allowLoginWait = false,
+  } = {}) {
     ({ browser, owned } = await openBrowser({ connect, profileDir, browser, owned }));
 
     const pages = await browser.pages();
     console.log(`   [debug] pestañas abiertas: ${pages.length}`);
     const page = pages.find((p) => p.url().startsWith(url)) ?? (await browser.newPage());
     await page.bringToFront().catch(() => {});
-    const g = new Gemini(browser, page, url, owned);
+    const g = new Gemini(browser, page, url, owned, allowLoginWait);
     await g.newChat();
     return g;
+  }
+
+  #signedOut() {
+    return /accounts\.google\.com|\/(sign_in|signin|login)(\?|$|\/)|servicelogin/i.test(this.page.url());
+  }
+
+  async #waitForLogin() {
+    console.log('   → Gemini pide iniciar sesión. Iniciá sesión en la ventana del navegador (espero hasta 10 min)...');
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await sleep(2000);
+      if (!this.#signedOut()) return;
+    }
+    throw fail('Gemini sigue pidiendo iniciar sesión. Iniciá sesión y volvé a intentar.', 'LOGIN');
   }
 
   async #diagnose() {
@@ -147,6 +169,11 @@ export class Gemini {
   }
 
   async waitForComposer() {
+    if (this.#signedOut()) {
+      if (this.allowLoginWait) await this.#waitForLogin();
+      else throw fail('Gemini pide iniciar sesión. Iniciá sesión y volvé a intentar.', 'LOGIN');
+    }
+
     try {
       await this.page.waitForSelector(SEL.input, { timeout: 20000 });
       return;
@@ -162,6 +189,10 @@ export class Gemini {
         await this.page.waitForSelector(SEL.input, { timeout: 5000 });
         return;
       } catch {
+        if (this.#signedOut()) {
+          if (this.allowLoginWait) await this.#waitForLogin();
+          else throw fail('Gemini pide iniciar sesión. Iniciá sesión y volvé a intentar.', 'LOGIN');
+        }
         const busy = await this.#busyNotice();
         if (busy) throw fail(`Gemini está temporalmente ocupado: ${busy}`, 'BUSY');
         await sleep(2000);

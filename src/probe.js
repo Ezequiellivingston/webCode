@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { openBrowser, closeBrowser } from './browser.js';
 import { SEL as CHATGPT_SEL } from './chatgpt.js';
 import { SEL as GEMINI_SEL } from './gemini.js';
+import { SEL as CLAUDE_SEL } from './claude.js';
 import { SEL as DEEPSEEK_SEL } from './deepseek.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,6 +28,13 @@ const PROVIDERS = {
     sel: GEMINI_SEL,
     login: /accounts\.google\.com|signin|\/login/i,
     busy: /temporarily unavailable|no disponible temporalmente|try again|vuelve a intentarlo|high demand|demanda alta/i,
+  },
+  claude: {
+    label: 'Claude',
+    url: 'https://claude.ai/new',
+    sel: CLAUDE_SEL,
+    login: /\/login|\/oauth|\/sso|\/magic-link|accounts\.google\.com/i,
+    busy: /temporarily unavailable|no disponible temporalmente|try again|vuelve a intentarlo|high demand|demanda alta|overloaded/i,
   },
   deepseek: {
     label: 'DeepSeek',

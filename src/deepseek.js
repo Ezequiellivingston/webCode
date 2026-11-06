@@ -79,11 +79,15 @@ export function readDeepSeekState() {
   let prose = '';
   let blocks = [];
   if (candidate) {
-    let codeEls = all('.md-code-block code', candidate);
+    // DeepSeek suele renderizar el código en <pre> dentro de .md-code-block (sin <code>).
+    let codeEls = all('.md-code-block pre', candidate);
+    if (!codeEls.length) codeEls = all('.md-code-block code', candidate);
     if (!codeEls.length) codeEls = all('pre code', candidate);
+    if (!codeEls.length) codeEls = all('pre', candidate);
     if (!codeEls.length) codeEls = all('code', candidate);
     blocks = codeEls.map((c) => c.innerText);
 
+    // Quitamos el bloque completo (incluye los botones "Copiar/Descargar") del prose.
     const clone = candidate.cloneNode(true);
     clone.querySelectorAll('.md-code-block, pre, .ds-markdown-cite').forEach((p) => p.remove());
     prose = textOf(clone);
