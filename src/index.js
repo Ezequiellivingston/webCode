@@ -3,7 +3,8 @@
 import readline from 'node:readline/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ChatGPT } from './chatgpt.js';
+import { ProviderManager, normalizeProvider } from './provider.js';
+import { probeProviders } from './probe.js';
 import { parseActions, execute, listTree } from './tools.js';
 import {
   buildFirstMessage,
@@ -34,18 +35,24 @@ const opt = (name, def) => {
 };
 
 if (flag('--help') || flag('-h')) {
-  console.log(`webcode - agente de programación vía ChatGPT web
+  console.log(`webcode - agente de programación vía ChatGPT/Gemini web
 
 Uso: webcode [opciones] ["tarea inicial"]
 
   --dir <ruta>       Directorio del proyecto (por defecto: el actual)
+  --provider <p>     Proveedor principal: chatgpt | gemini (por defecto: chatgpt)
+  --fallback <p>     Proveedor(es) de respaldo, separados por coma (ej. gemini)
   --connect <url>    Conectarse a un Chrome ya abierto (ej. http://127.0.0.1:9222)
   --profile <ruta>   Perfil de Chrome persistente (por defecto: ~/.webcode-profile)
   --yes, -y          Ejecutar comandos sin pedir confirmación (sin -y se pregunta una sola vez)
-  --url <url>        URL de ChatGPT (por defecto: https://chatgpt.com/)
+  --url <url>        URL del proveedor principal (por defecto según el proveedor)
   --rotate-after <n> Abrir un chat nuevo cada N pasos (por defecto: 25)
   --max-chars <n>    Abrir un chat nuevo al superar N caracteres enviados (por defecto: 50000)
   --max-message <n>  Recortar cada mensaje a N caracteres (por defecto: 16000)
+  --busy-wait <s>    Espera ante avisos temporales del proveedor (por defecto: 65)
+  --busy-retries <n> Reintentos ante avisos temporales (por defecto: 3)
+  --probe            Verificar selectores/login de los proveedores y salir
+  --probe-wait <s>   Espera máxima por proveedor en --probe (por defecto: 20)
   --spec <archivo>   Construir el proyecto desde un spec grande (usa varios chats)
   --parallel <n>     Chats en paralelo con --spec (por defecto: 2)
   --resume           Retomar un --spec desde .webcode/state.json
@@ -59,15 +66,28 @@ const root = path.resolve(opt('--dir', process.cwd()));
 let autoYes = flag('--yes') || flag('-y');
 const profileDir = path.resolve(opt('--profile', path.join(os.homedir(), '.webcode-profile')));
 const connect = opt('--connect');
-const url = opt('--url', 'https://chatgpt.com/');
+let provider;
+try {
+  provider = normalizeProvider(opt('--provider', 'chatgpt'));
+} catch (e) {
+  console.error(c.red(e.message));
+  process.exit(1);
+}
+const fallback = opt('--fallback', '');
+const url = opt('--url');
 const valueFlags = new Set([
   '--dir',
+  '--provider',
+  '--fallback',
   '--connect',
   '--profile',
   '--url',
   '--rotate-after',
   '--max-chars',
   '--max-message',
+  '--busy-wait',
+  '--busy-retries',
+  '--probe-wait',
   '--spec',
   '--parallel',
 ]);
@@ -80,9 +100,23 @@ const intOpt = (name, def) => {
 const rotateAfter = intOpt('--rotate-after', 25);
 const maxChars = intOpt('--max-chars', 50000);
 const maxMessage = intOpt('--max-message', 16000);
+const busyWaitMs = intOpt('--busy-wait', 65) * 1000;
+const busyRetries = intOpt('--busy-retries', 3);
 const specArg = opt('--spec');
 const parallel = intOpt('--parallel', 2);
 const resumeMode = flag('--resume');
+
+if (flag('--probe')) {
+  const list = [...new Set([provider, ...String(fallback || '').split(',').map((s) => s.trim()).filter(Boolean).map(normalizeProvider)])];
+  const ok = await probeProviders({
+    providers: list,
+    connect,
+    profileDir,
+    url,
+    waitMs: intOpt('--probe-wait', 20) * 1000,
+  });
+  process.exit(ok ? 0 : 1);
+}
 
 function compactMessage(message, maxLen = maxMessage) {
   if (message.length <= maxLen) return message;
@@ -114,13 +148,23 @@ const confirm = (q) => {
 const log = (s) => console.log(s);
 
 console.log(c.bold('webcode') + c.dim(`  · proyecto: ${root}`));
-console.log(c.dim('Abriendo ChatGPT en el navegador...'));
+const providerLabel = provider === 'gemini' ? 'Gemini' : 'ChatGPT';
+console.log(c.dim(`Abriendo ${providerLabel} en el navegador...`));
+if (fallback) console.log(c.dim(`Proveedor(es) de respaldo: ${fallback}`));
 
 let gpt;
 try {
-  gpt = await ChatGPT.open({ connect, profileDir, url });
+  gpt = await ProviderManager.open({
+    provider,
+    fallback,
+    connect,
+    profileDir,
+    url,
+    busyWaitMs,
+    busyRetries,
+  });
 } catch (e) {
-  console.error(c.red('No pude abrir ChatGPT: ' + e.message));
+  console.error(c.red(`No pude abrir ${providerLabel}: ` + e.message));
   process.exit(1);
 }
 
@@ -184,7 +228,7 @@ async function runTask(task) {
 
   for (let step = 1; step <= MAX_STEPS; step++) {
     stepsSinceRotate++;
-    console.log(c.dim(`\n[paso ${step}] → enviando a ChatGPT y esperando respuesta...`));
+    console.log(c.dim(`\n[paso ${step}] → enviando a ${gpt.label} y esperando respuesta...`));
 
     let reply;
     let rotated = false;
@@ -206,7 +250,7 @@ async function runTask(task) {
           console.log(c.red('✘ ' + e2.message));
           return;
         }
-      } else if (['COMPOSER', 'SEND', 'RESPONSE'].includes(e.code)) {
+      } else if (['COMPOSER', 'SEND', 'RESPONSE', 'DOM'].includes(e.code)) {
         console.log(c.dim(`↻ ${e.message}`));
         console.log(c.dim('   Reintentando en un chat nuevo con el contexto...'));
         try {
@@ -216,19 +260,23 @@ async function runTask(task) {
           console.log(c.red('✘ ' + e2.message));
           return;
         }
+      } else if (e.code === 'BUSY') {
+        console.log(c.red('✘ ' + e.message));
+        console.log(c.dim('   El proveedor pidió esperar. Probá de nuevo en unos minutos o usá --fallback gemini.'));
+        return;
       } else {
         console.log(c.red('✘ ' + e.message));
         return;
       }
     }
 
-    // ChatGPT avisó que la conversación llegó a su límite: rotar una vez.
+    // El proveedor avisó que la conversación llegó a su límite: rotar una vez.
     if (reply.limit) {
       if (rotated) {
-        console.log(c.red('✘ ChatGPT sigue rechazando mensajes (límite de uso/cuota). Probá más tarde.'));
+        console.log(c.red('✘ El proveedor sigue rechazando mensajes (límite de uso/cuota). Probá más tarde.'));
         return;
       }
-      console.log(c.dim('↻ ChatGPT indicó límite de contexto; abriendo chat nuevo...'));
+      console.log(c.dim('↻ El proveedor indicó límite de contexto; abriendo chat nuevo...'));
       try {
         reply = await send(message, task, { forceRotate: true });
       } catch (e2) {
@@ -236,17 +284,17 @@ async function runTask(task) {
         return;
       }
       if (reply.limit) {
-        console.log(c.red('✘ ChatGPT sigue rechazando mensajes (límite de uso/cuota). Probá más tarde.'));
+        console.log(c.red('✘ El proveedor sigue rechazando mensajes (límite de uso/cuota). Probá más tarde.'));
         return;
       }
     }
 
-    if (reply.prose) console.log('\n' + c.cyan('ChatGPT: ') + reply.prose.slice(0, 1200));
+    if (reply.prose) console.log('\n' + c.cyan(gpt.label + ': ') + reply.prose.slice(0, 1200));
 
     const actions = parseActions(reply.blocks, reply.full);
     if (!actions.length) {
       if (++emptyReplies > 2) {
-        console.log(c.red('✘ ChatGPT no devolvió acciones válidas. Abortando tarea.'));
+        console.log(c.red('✘ El proveedor no devolvió acciones válidas. Abortando tarea.'));
         return;
       }
       message = buildNoActions();
@@ -259,7 +307,7 @@ async function runTask(task) {
     for (const a of actions) {
       if (a.type === 'done') {
         // Si alguna acción de esta misma respuesta falló, no damos la tarea por terminada:
-        // los errores vuelven a ChatGPT para que los corrija.
+        // los errores vuelven al proveedor para que los corrija.
         if (results.some((r) => !r.ok)) {
           console.log(c.dim('  (ignoro "done": hubo acciones con error)'));
           break;
@@ -298,10 +346,15 @@ async function runSpec(specPath, baseTask) {
 
   const titles = specOutline(spec.sections, 0, 120);
   const n = Math.max(1, Math.min(parallel, pending.length));
-  const workers = [gpt];
-  for (let i = 1; i < n; i++) {
-    console.log(c.dim(`Abriendo worker ${i + 1}...`));
-    workers.push(await gpt.spawnWorker());
+  const workers = [];
+  if (n === 1) {
+    // Un solo worker: aprovechamos la pestaña ya abierta.
+    workers.push(gpt);
+  } else {
+    for (let i = 0; i < n; i++) {
+      console.log(c.dim(`Abriendo worker ${i + 1}...`));
+      workers.push(await gpt.spawnWorker());
+    }
   }
   console.log(c.dim(`Secciones pendientes: ${pending.length} · chats en paralelo: ${workers.length}`));
 
@@ -416,7 +469,7 @@ async function runSpec(specPath, baseTask) {
     }
   }
 
-  for (let i = 1; i < workers.length; i++) await workers[i].closeWorker().catch(() => {});
+  for (const w of workers) await w.closeWorker().catch(() => {});
   await persist();
 
   if (failures.length) {

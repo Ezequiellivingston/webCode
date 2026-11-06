@@ -1,10 +1,10 @@
 {
   "name": "webcode",
   "version": "0.1.0",
-  "description": "Agente de programación tipo OpenCode que usa la interfaz web de ChatGPT (Puppeteer) en vez de una API",
+  "description": "Agente de programación tipo OpenCode que usa la interfaz web de ChatGPT o Gemini (Puppeteer) en vez de una API",
   "type": "module",
   "bin": {
-    "webcode": "./src/index.js"
+    "webcode": "src/index.js"
   },
   "files": [
     "src/*.js",

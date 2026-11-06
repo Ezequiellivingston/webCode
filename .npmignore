@@ -4,6 +4,7 @@ node_modules/
 .webcode-profile/
 debug*.png
 debug-dom*.json
+debug-probe*.json
 *.log
 *.tgz
 coverage/

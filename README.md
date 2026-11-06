@@ -1,6 +1,18 @@
 # webcode
 
-Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
+Agente de programación tipo OpenCode que, en vez de usar una API, **controla la web de ChatGPT (o Gemini) con Puppeteer**: le envía tu tarea, lee la respuesta, ejecuta localmente lo que pide (crear archivos, editar, correr comandos), le devuelve los resultados y repite hasta terminar.
+
+## Proveedores: ChatGPT y Gemini
+
+```bash
+webcode --provider gemini "crea una API REST con Express"   # usa Gemini
+webcode --provider chatgpt --fallback gemini "tu tarea"     # ChatGPT y, si falla, Gemini
+webcode --fallback gemini                                   # chat interactivo con respaldo
+```
+
+- `--provider chatgpt|gemini` elige el proveedor principal (por defecto `chatgpt`).
+- `--fallback gemini` (o `chatgpt`) permite continuar en otro proveedor si el principal falla o se queda sin cuota. Al cambiar, webcode abre un chat nuevo y le pasa el contexto acumulado.
+- Necesitás iniciar sesión una vez en cada proveedor que uses; la sesión queda en el mismo perfil de Chrome (`~/.webcode-profile`).
 
 ## Instalación
 
@@ -39,17 +51,23 @@ webcode "crea una API REST con Express y una ruta /health"
 webcode --dir "C:\ruta\a\mi-proyecto" "tu tarea"
 ```
 
-La primera vez se abre Chrome: **inicia sesión en ChatGPT** una sola vez. La sesión queda guardada en `~/.webcode-profile`.
+La primera vez se abre Chrome: **inicia sesión en el proveedor que uses** (ChatGPT y/o Gemini) una sola vez. La sesión queda guardada en `~/.webcode-profile`.
 
 ### Opciones
 
 | Opción | Descripción |
 |---|---|
 | `--dir <ruta>` | Directorio del proyecto (por defecto el actual) |
+| `--provider <p>` | Proveedor principal: `chatgpt` o `gemini` (por defecto `chatgpt`) |
+| `--fallback <p>` | Proveedor(es) de respaldo, separados por coma |
 | `--connect <url>` | Conectarse a un Chrome ya abierto (ver abajo) |
 | `--profile <ruta>` | Perfil persistente de Chrome |
 | `--yes`, `-y` | Ejecutar comandos sin pedir confirmación |
-| `--url <url>` | URL de ChatGPT (por defecto: https://chatgpt.com/) |
+| `--url <url>` | URL del proveedor principal (por defecto según el proveedor) |
+| `--busy-wait <s>` | Espera ante avisos temporales del proveedor (por defecto 65 s) |
+| `--busy-retries <n>` | Reintentos ante avisos temporales (por defecto 3) |
+| `--probe` | Verificar selectores/login de los proveedores y salir |
+| `--probe-wait <s>` | Espera máxima por proveedor en `--probe` (por defecto 20 s) |
 | `--rotate-after <n>` | Abrir un chat nuevo cada N pasos (por defecto: 25) |
 | `--max-chars <n>` | Abrir un chat nuevo al superar N caracteres enviados (por defecto: 50000) |
 | `--max-message <n>` | Recortar cada mensaje a N caracteres (por defecto: 16000) |
@@ -64,7 +82,7 @@ webcode --dir ./mi-proyecto --spec ./mi-proyecto/SPEC.md --parallel 2 -y
 ```
 
 - El spec se trocea por encabezados markdown (y por tamaño si una sección es enorme), sin mandarle todo junto a ChatGPT.
-- Cada sección se trabaja como una tarea independiente, en un chat propio. Con `--parallel 2` se abren dos pestañas/chats y avanzan a la vez.
+- Cada sección se trabaja como una tarea independiente, en un chat propio. Con `--parallel 2` se abren dos pestañas/chats y avanzan a la vez. Cada worker tiene su propio proveedor y failover: si uno cambia a Gemini, los demás no se ven afectados.
 - Las escrituras se serializan por archivo y los comandos `run` se ejecutan de a uno para evitar choques entre workers.
 - El progreso se guarda en `.webcode/state.json` (secciones hechas, archivos y resúmenes). Si algo falla, `--resume` retoma solo lo pendiente.
 - Al terminar todas las secciones, un chat hace una verificación final (tests/build/completar faltantes).
@@ -73,7 +91,7 @@ webcode --dir ./mi-proyecto --spec ./mi-proyecto/SPEC.md --parallel 2 -y
 ### Comandos dentro de la app
 
 - Escribe cualquier tarea y presiona Enter.
-- `/new` inicia un chat nuevo en ChatGPT y reinicia el contexto local.
+- `/new` inicia un chat nuevo en el proveedor activo y reinicia el contexto local.
 - `/status` muestra pasos, caracteres y archivos modificados de la sesión.
 - `/exit` sale.
 
@@ -82,6 +100,22 @@ webcode --dir ./mi-proyecto --spec ./mi-proyecto/SPEC.md --parallel 2 -y
 Cuando la conversación se acerca al límite (por pasos o por caracteres) o ChatGPT rechaza el mensaje, `webcode` abre un **chat nuevo** y le pasa un resumen del estado: tarea original, árbol del proyecto, archivos ya modificados y últimos resultados. Así la tarea continúa sin repetir todo desde cero.
 
 Si ChatGPT responde “El mensaje que enviaste era demasiado largo”, `webcode` recorta ese mensaje (a `--max-message`, o a un 60% si vuelve a pasar) y lo reenvía automáticamente en el mismo chat.
+
+### Diagnóstico de selectores (`--probe`)
+
+Si el proveedor cambia su HTML, verificá los selectores antes de correr una tarea:
+
+```bash
+webcode --probe
+webcode --provider gemini --probe
+webcode --provider chatgpt --fallback gemini --probe
+```
+
+Muestra qué selectores de `input`, `send`, `stop` y `assistant` matchean, avisa si hay una pantalla de login o un aviso temporal, y guarda el DOM en `debug-probe-chatgpt.json` / `debug-probe-gemini.json`. Escribe un texto de prueba en el cuadro (sin enviarlo) porque en Gemini el botón de enviar aparece recién al escribir. `stop` y `assistant` solo se pueden validar con una respuesta real.
+
+### Avisos temporales (“revisión rápida… vuelve a intentarlo en 1 minuto”)
+
+Cuando el proveedor muestra un aviso temporal (revisión rápida, alta demanda, servicio no disponible), `webcode` **no aborta**: espera `--busy-wait` segundos y reintenta el mismo mensaje hasta `--busy-retries` veces, conservando la conversación. Si se agotan los reintentos y hay `--fallback`, cambia de proveedor y continúa con el contexto acumulado.
 
 ## Si ChatGPT detecta la automatización (captcha / Cloudflare)
 
@@ -100,11 +134,11 @@ node src/index.js --connect http://127.0.0.1:9222
 
 ## Cómo funciona
 
-1. `chatgpt.js` pega tu mensaje en el cuadro de chat, lo envía y espera a que termine de generar.
-2. El primer mensaje incluye instrucciones (`prompt.js`) para que ChatGPT responda con un bloque de código `webcode` con acciones:
+1. `chatgpt.js` / `gemini.js` pegan tu mensaje en el cuadro de chat, lo envían y esperan a que termine de generar.
+2. El primer mensaje incluye instrucciones (`prompt.js`) para que el proveedor responda con un bloque de código `webcode` con acciones:
    `write_file`, `edit_file`, `run`, `read`, `list`, `done`.
 3. `tools.js` interpreta esas acciones y las ejecuta en tu carpeta (con rutas restringidas al proyecto).
-4. Los resultados se envían de vuelta a ChatGPT como `[RESULTADOS]` y el ciclo continúa (máx. 40 pasos por tarea).
+4. Los resultados se envían de vuelta al proveedor como `[RESULTADOS]` y el ciclo continúa (máx. 40 pasos por tarea).
 
 ## Publicar en npm / GitHub
 
@@ -155,7 +189,7 @@ Desde GitHub se instala con `npm install -g github:USUARIO/webcode` (no con `npm
 
 ## Limitaciones
 
-- **Selectores frágiles**: si ChatGPT cambia su HTML, edita `SEL` al inicio de `src/chatgpt.js`.
+- **Selectores frágiles**: si ChatGPT o Gemini cambian su HTML, edita `SEL` al inicio de `src/chatgpt.js` o `src/gemini.js`.
 - Automatizar la interfaz web puede ir contra los términos de uso de OpenAI y puede dispararle límites de uso o captchas. Úsalo bajo tu responsabilidad y con tu propia cuenta.
 - Respuestas muy largas pueden cortarse; si pasa, el agente avisa del bloque truncado y ChatGPT lo reenvía.
 - ChatGPT puede ignorar el formato a veces; el programa reintenta hasta 2 veces.

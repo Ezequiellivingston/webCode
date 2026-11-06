@@ -8,6 +8,7 @@ node_modules/
 # Debug y logs
 debug*.png
 debug-dom*.json
+debug-probe*.json
 *.log
 npm-debug.log*
 

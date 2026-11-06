@@ -1,7 +1,7 @@
 // Driver de ChatGPT vía navegador (Puppeteer). Sin API.
-import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
+import { openBrowser, closeBrowser } from './browser.js';
 
 // Si ChatGPT cambia su interfaz, ajusta los selectores aquí.
 // Cada uno acepta varias alternativas separadas por coma.
@@ -43,6 +43,12 @@ const looksLikeLimit = (text) => !!text && LIMIT_RE.test(text);
 const TOO_LONG_RE =
   /demasiado largo|too long|ed[ií]talo y vuelve|edit it and (try|send)|message you submitted was too long/i;
 const looksTooLong = (text) => !!text && TOO_LONG_RE.test(text);
+
+// Aviso TEMPORAL de ChatGPT ("revisión rápida... vuelve a intentarlo en 1 minuto").
+// No es un límite real: conviene esperar y reintentar el mismo mensaje.
+const BUSY_RE =
+  /revisi[oó]n r[aá]pida|quick (check|review)|siga siendo confiable|vuelve a intentarlo en|try again in (a|one) (minute|moment)|estamos haciendo una revisi[oó]n|temporarily unavailable|no disponible temporalmente|high demand|demanda alta|we'?re experiencing|too many requests|demasiadas solicitudes/i;
+const looksBusy = (text) => !!text && BUSY_RE.test(text);
 
 function fail(message, code) {
   const e = new Error(message);
@@ -147,22 +153,6 @@ export function readChatState() {
   };
 }
 
-function findChrome() {
-  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
-  const candidates = [
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  ];
-  return candidates.find((p) => p && fs.existsSync(p));
-}
-
 export class ChatGPT {
   constructor(browser, page, url, owned) {
     this.browser = browser;
@@ -174,43 +164,10 @@ export class ChatGPT {
   /**
    * connect: URL de un Chrome ya abierto con --remote-debugging-port (ej. http://127.0.0.1:9222)
    * profileDir: carpeta de perfil persistente (para no re-loguearse) cuando lanzamos Chrome nosotros
+   * browser/owned: reutilizar un Chrome ya abierto por otro proveedor (webcode cierra el browser).
    */
-  static async open({ connect, profileDir, url = 'https://chatgpt.com/' }) {
-    let browser;
-    let owned = false;
-
-    if (connect) {
-      browser = await puppeteer.connect({ browserURL: connect, defaultViewport: null });
-    } else {
-      const executablePath = findChrome();
-      if (!executablePath) {
-        throw new Error('No encontré Chrome. Define CHROME_PATH o usa --connect http://127.0.0.1:9222');
-      }
-      console.log(`   [debug] lanzando Chrome: ${executablePath}`);
-      console.log(`   [debug] perfil: ${profileDir}`);
-      try {
-        browser = await puppeteer.launch({
-          executablePath,
-          headless: false,
-          userDataDir: profileDir,
-          defaultViewport: null,
-          timeout: 45000,
-          ignoreDefaultArgs: ['--enable-automation'],
-          args: [
-            '--disable-blink-features=AutomationControlled',
-            '--no-first-run',
-            '--no-default-browser-check',
-          ],
-        });
-      } catch (e) {
-        throw new Error(
-          `No pude lanzar Chrome (${e.message}). Cerrá TODAS las ventanas de Chrome que haya abierto webcode ` +
-            `(Administrador de tareas → chrome.exe) o usá --connect con un Chrome abierto a mano.`
-        );
-      }
-      owned = true;
-      console.log('   [debug] Chrome lanzado');
-    }
+  static async open({ connect, profileDir, url = 'https://chatgpt.com/', browser, owned = false } = {}) {
+    ({ browser, owned } = await openBrowser({ connect, profileDir, browser, owned }));
 
     const pages = await browser.pages();
     console.log(`   [debug] pestañas abiertas: ${pages.length}`);
@@ -225,7 +182,9 @@ export class ChatGPT {
     const title = await this.page.title().catch(() => '');
     const url = this.page.url();
     console.log(`\n⚠  No veo el cuadro de chat.\n   URL: ${url}\n   Título: "${title}"`);
-    if (/just a moment|attention required|un momento|verif/i.test(title)) {
+    if (await this.#busyNotice()) {
+      console.log('   → ChatGPT está en una revisión temporal. Esperá ~1 minuto y reintentá.');
+    } else if (/just a moment|attention required|un momento|verif/i.test(title)) {
       console.log('   → Cloudflare está pidiendo verificación. Resolvela a mano en la ventana del navegador.');
     } else if (/log-?in|auth|accounts/i.test(url)) {
       console.log('   → Estás en una pantalla de login. Iniciá sesión en la ventana del navegador.');
@@ -241,6 +200,8 @@ export class ChatGPT {
       await this.page.waitForSelector(SEL.input, { timeout: 20000 });
       return;
     } catch {
+      const busy = await this.#busyNotice();
+      if (busy) throw fail(`ChatGPT está temporalmente ocupado: ${busy}`, 'BUSY');
       await this.#diagnose();
     }
 
@@ -251,6 +212,8 @@ export class ChatGPT {
         await this.page.waitForSelector(SEL.input, { timeout: 5000 });
         return;
       } catch {
+        const busy = await this.#busyNotice();
+        if (busy) throw fail(`ChatGPT está temporalmente ocupado: ${busy}`, 'BUSY');
         await sleep(2000);
       }
     }
@@ -299,10 +262,7 @@ export class ChatGPT {
   }
 
   async close() {
-    try {
-      if (this.owned) await this.browser.close();
-      else await this.browser.disconnect();
-    } catch {}
+    await closeBrowser({ browser: this.browser, owned: this.owned });
   }
 
   // Lee el estado del chat de forma tolerante a cambios de DOM.
@@ -387,7 +347,7 @@ export class ChatGPT {
             return (el.textContent || '').trim().slice(0, 300);
           }
         }
-        const small = [...document.querySelectorAll('div, span, p')].filter(
+        const small = [...document.querySelectorAll('div, span, p, section, h1, h2, h3, li, label')].filter(
           (el) =>
             visible(el) &&
             !inConversation(el) &&
@@ -395,6 +355,46 @@ export class ChatGPT {
             re.test(el.textContent || '')
         );
         return small.length ? (small[0].textContent || '').trim().slice(0, 300) : '';
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  // Detecta el aviso temporal ("revisión rápida... vuelve a intentarlo en 1 minuto").
+  async #busyNotice() {
+    try {
+      return await this.page.evaluate(() => {
+        const re =
+          /revisi[oó]n r[aá]pida|quick (check|review)|siga siendo confiable|vuelve a intentarlo en|try again in (a|one) (minute|moment)|estamos haciendo una revisi[oó]n|temporarily unavailable|no disponible temporalmente|high demand|demanda alta|we'?re experiencing|too many requests|demasiadas solicitudes/i;
+        const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const inConversation = (el) =>
+          !!el.closest(
+            '[data-chatgpt-conversation-selection-target], [data-message-author-role], [data-markdown-text-style], article'
+          );
+        const els = [
+          ...document.querySelectorAll(
+            '[role="alert"], [role="dialog"], [aria-live], [class*="toast"], [class*="banner"], [class*="error"], [data-testid*="error"]'
+          ),
+        ];
+        for (const el of els) {
+          if (visible(el) && !inConversation(el) && re.test(el.textContent || '')) {
+            return (el.textContent || '').trim().slice(0, 300);
+          }
+        }
+        const small = [...document.querySelectorAll('div, span, p, section, h1, h2, h3, li, label')].filter(
+          (el) =>
+            visible(el) &&
+            !inConversation(el) &&
+            (el.textContent || '').trim().length < 400 &&
+            re.test(el.textContent || '')
+        );
+        if (small.length) return (small[0].textContent || '').trim().slice(0, 300);
+
+        // Último recurso: la página quedó reducida a un aviso (modal de revisión/alta demanda).
+        const raw = document.body.textContent || '';
+        if (raw.length < 3000 && re.test(raw)) return raw.replace(/\s+/g, ' ').trim().slice(0, 300);
+        return '';
       });
     } catch {
       return '';
@@ -465,6 +465,8 @@ export class ChatGPT {
     const sent = async () => {
       await sleep(1500);
       const s = await this.#snapshot();
+      const busy = looksBusy(s.pageError) || (await this.#busyNotice());
+      if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
       const tooLong = looksTooLong(s.pageError) || (await this.#tooLongError());
       if (tooLong) throw fail(`ChatGPT rechazó el mensaje: ${tooLong}`, 'TOO_LONG');
       return (await composerLen()) === 0 || s.assistantCount > before || s.stop;
@@ -495,6 +497,8 @@ export class ChatGPT {
       if (await sent()) return;
     }
 
+    const busy = await this.#busyNotice();
+    if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
     const tooLong = await this.#tooLongError();
     if (tooLong) throw fail(`ChatGPT rechazó el mensaje: ${tooLong}`, 'TOO_LONG');
 
@@ -504,6 +508,9 @@ export class ChatGPT {
 
   /** Envía un mensaje y devuelve { full, prose, blocks } de la respuesta */
   async ask(text) {
+    const busyNow = await this.#busyNotice();
+    if (busyNow) throw fail(`ChatGPT pidió esperar: ${busyNow}`, 'BUSY');
+
     const before = await this.#snapshot();
     await this.#paste(text);
 
@@ -522,8 +529,12 @@ export class ChatGPT {
           `   [debug] esperando respuesta (${Math.round((Date.now() - t0) / 1000)}s) · ` +
             `asistente=${s.assistantCount} · turnos=${s.turnCount} · stop=${s.stop}`
         );
+        const busy = looksBusy(s.pageError) || (await this.#busyNotice());
+        if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
       }
       if (Date.now() - t0 > 120000) {
+        const busy = await this.#busyNotice();
+        if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
         const tooLong = await this.#tooLongError();
         if (tooLong) throw fail(`ChatGPT rechazó el mensaje: ${tooLong}`, 'TOO_LONG');
         await this.page.screenshot({ path: 'debug-ask.png' }).catch(() => {});
@@ -562,6 +573,8 @@ export class ChatGPT {
         if (!noTextSince) noTextSince = Date.now();
         if (!dumped && Date.now() - noTextSince > 5000) {
           dumped = true;
+          const busy = looksBusy(s.pageError) || (await this.#busyNotice());
+          if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
           await this.#dumpDom();
         }
         if (Date.now() - noTextSince > 20000) {
@@ -570,7 +583,7 @@ export class ChatGPT {
           await this.page.screenshot({ path: 'debug-ask.png' }).catch(() => {});
           throw fail(
             'ChatGPT terminó de generar pero no pude leer el texto. Revisá debug-dom.json y debug-ask.png.',
-            'RESPONSE'
+            'DOM'
           );
         }
       } else {
@@ -602,7 +615,7 @@ export class ChatGPT {
       await this.#dumpDom();
       throw fail(
         'ChatGPT respondió pero no pude leer el texto. Revisá debug-ask.png y los datos de DOM en la consola.',
-        'RESPONSE'
+        'DOM'
       );
     }
 

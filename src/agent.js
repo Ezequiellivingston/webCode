@@ -71,7 +71,7 @@ export async function runAgent({
         log(`   (mensaje recortado a ${shorter.length} caracteres y reenviado)`);
         reply = await gpt.ask(shorter);
         sentChars += shorter.length;
-      } else if (['COMPOSER', 'SEND', 'RESPONSE'].includes(e.code)) {
+      } else if (['COMPOSER', 'SEND', 'RESPONSE', 'DOM'].includes(e.code)) {
         log(`   ↻ ${e.message} → chat nuevo con contexto`);
         await rotate(message);
         reply = await gpt.ask(message);
@@ -82,17 +82,17 @@ export async function runAgent({
     }
 
     if (reply.limit) {
-      log('   ↻ límite indicado por ChatGPT → chat nuevo con contexto');
+      log('   ↻ límite indicado por el proveedor → chat nuevo con contexto');
       await rotate('');
       reply = await gpt.ask(message);
-      if (reply.limit) throw new Error('ChatGPT sigue rechazando mensajes (límite de uso/cuota).');
+      if (reply.limit) throw new Error('El proveedor sigue rechazando mensajes (límite de uso/cuota).');
     }
 
     if (reply.prose) log('\n' + reply.prose.slice(0, 900));
 
     const actions = parseActions(reply.blocks, reply.full);
     if (!actions.length) {
-      if (++emptyReplies > 2) throw new Error('ChatGPT no devolvió acciones válidas.');
+      if (++emptyReplies > 2) throw new Error('El proveedor no devolvió acciones válidas.');
       message = buildNoActions();
       continue;
     }
