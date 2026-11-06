@@ -67,6 +67,41 @@ function safePath(root, p) {
 const ok = (output) => ({ ok: true, output });
 const fail = (output) => ({ ok: false, output });
 
+// Detecta directivas del protocolo que el modelo dejó dentro del contenido
+// de un archivo (antes del "@@@ end"). Se limpian para no corromper el archivo.
+const PROTOCOL_LINE_RE = /^\s*@@@\s+(write_file|edit_file|run|read|list|done|end)\b/i;
+const JUNK_PROTOCOL_RE = /^\s*@@@\s+@@@/;
+
+function sanitizeBody(lines) {
+  const kept = [];
+  const removed = [];
+  let nested = '';
+  for (const line of lines) {
+    if (PROTOCOL_LINE_RE.test(line)) {
+      if (/^\s*@@@\s+(write_file|edit_file|end)\b/i.test(line)) {
+        nested = line.trim();
+        break;
+      }
+      removed.push(line.trim());
+      continue;
+    }
+    if (JUNK_PROTOCOL_RE.test(line)) {
+      removed.push(line.trim());
+      continue;
+    }
+    kept.push(line);
+  }
+  return { kept, removed, nested };
+}
+
+const protocolNote = (removed) =>
+  removed.length
+    ? ` ⚠ Quité ${removed.length} línea(s) de control que estaban dentro del archivo (${removed
+        .slice(0, 3)
+        .map((l) => JSON.stringify(l))
+        .join(', ')}). Cerrá el bloque con "@@@ end" antes de las acciones.`
+    : '';
+
 export async function listTree(root, rel = '.', maxDepth = 3, limit = 200) {
   const out = [];
   async function walk(dir, depth, prefix) {
@@ -105,18 +140,57 @@ export async function execute(a, ctx) {
     switch (a.type) {
       case 'write_file': {
         if (a.truncated) return fail('Bloque truncado (falta "@@@ end"). Reenvía el archivo completo.');
+        const { kept, removed, nested } = sanitizeBody(a.body);
+        if (nested) {
+          return fail(
+            `El contenido de ${a.arg} incluye "${nested}" antes de "@@@ end". ` +
+              'Cerrá el archivo con "@@@ end" y reenviá solo el contenido limpio.'
+          );
+        }
+        if (!kept.some((l) => l.trim()) && removed.length) {
+          return fail(
+            `El bloque de ${a.arg} quedó vacío tras quitar líneas de control. ` +
+              'Cerrá el contenido con "@@@ end" y reenviá solo el archivo.'
+          );
+        }
         const p = safePath(root, a.arg);
         await fs.mkdir(path.dirname(p), { recursive: true });
-        await fs.writeFile(p, a.body.join('\n') + '\n', 'utf8');
-        log(`  ✎ escrito ${a.arg} (${a.body.length} líneas)`);
-        return ok(`Archivo escrito: ${a.arg} (${a.body.length} líneas)`);
+        const next = kept.join('\n') + '\n';
+        let prev = '';
+        let existed = false;
+        try {
+          prev = await fs.readFile(p, 'utf8');
+          existed = true;
+        } catch {}
+        await fs.writeFile(p, next, 'utf8');
+        if (existed && prev === next) {
+          log(`  ⚠ ${a.arg} sin cambios (contenido idéntico)`);
+          return fail(
+            `Archivo NO modificado: ${a.arg} quedó idéntico a como estaba. ` +
+              `Si la tarea era mejorarlo, usá "@@@ read ${a.arg}" y luego "@@@ edit_file" con cambios concretos; no repitas el mismo contenido.` +
+              protocolNote(removed)
+          );
+        }
+        log(
+          `  ✎ escrito ${a.arg} (${kept.length} líneas)` +
+            (removed.length ? ` [limpié ${removed.length} línea/s de control]` : '')
+        );
+        return ok(`Archivo escrito: ${a.arg} (${kept.length} líneas).${protocolNote(removed)}`);
       }
 
       case 'edit_file': {
         if (a.truncated) return fail('Bloque truncado (falta "@@@ end").');
+        const { kept, removed, nested } = sanitizeBody(a.body);
+        if (nested) {
+          return fail(
+            `El contenido de ${a.arg} incluye "${nested}" antes de "@@@ end". ` +
+              'Cerrá el bloque con "@@@ end" y reenviá solo los cambios.'
+          );
+        }
         const p = safePath(root, a.arg);
         let content = await fs.readFile(p, 'utf8');
-        const body = a.body.join('\n');
+        const before = content;
+        const body = kept.join('\n');
         const re = /<<<<<<< SEARCH\n([\s\S]*?)\n=======\n([\s\S]*?)\n?>>>>>>> REPLACE/g;
         let m;
         let n = 0;
@@ -128,8 +202,19 @@ export async function execute(a, ctx) {
         }
         if (!n) return fail('Formato inválido: usa <<<<<<< SEARCH / ======= / >>>>>>> REPLACE');
         await fs.writeFile(p, content, 'utf8');
-        log(`  ✎ editado ${a.arg} (${n} cambio/s)`);
-        return ok(`Archivo editado: ${a.arg} (${n} cambio/s)`);
+        if (content === before) {
+          log(`  ⚠ ${a.arg} sin cambios (reemplazo idéntico)`);
+          return fail(
+            `Archivo NO modificado: ${a.arg} quedó igual. Los bloques SEARCH/REPLACE eran idénticos. ` +
+              `Cambiá el contenido o usá "@@@ read ${a.arg}" para ver el estado actual.` +
+              protocolNote(removed)
+          );
+        }
+        log(
+          `  ✎ editado ${a.arg} (${n} cambio/s)` +
+            (removed.length ? ` [limpié ${removed.length} línea/s de control]` : '')
+        );
+        return ok(`Archivo editado: ${a.arg} (${n} cambio/s).${protocolNote(removed)}`);
       }
 
       case 'read': {

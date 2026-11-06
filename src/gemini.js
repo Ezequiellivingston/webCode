@@ -37,7 +37,7 @@ export const SEL = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const LIMIT_RE =
-  /(you'?ve reached|has reached|reached (the|your)|límite (de|del|alcanzado)|usage limit|message limit|too many requests|demasiadas solicitudes|conversation is too long|start a new chat|inicia un chat nuevo|abre un chat nuevo)/i;
+  /(you'?ve reached|has reached|reached (the|your)|límite (de|del|alcanzado)|l[ií]mite de contexto|context window (is )?full|window is full|ventana de contexto llena|contexto lleno|ventana llena|usage limit|message limit|too many requests|demasiadas solicitudes|conversation is too long|start a new chat|inicia un chat nuevo|abre un chat nuevo)/i;
 const looksLikeLimit = (text) => !!text && LIMIT_RE.test(text);
 
 const TOO_LONG_RE = /demasiado largo|too long|message you submitted was too long|prompt is too long/i;
@@ -400,6 +400,7 @@ export class Gemini {
       if (busy) throw fail(`Gemini pidió esperar: ${busy}`, 'BUSY');
       const tooLong = looksTooLong(s.pageError) || (await this.#tooLongError());
       if (tooLong) throw fail(`Gemini rechazó el mensaje: ${tooLong}`, 'TOO_LONG');
+      if (looksLikeLimit(s.pageError)) return true;
       return (await composerLen()) === 0 || s.assistantCount > before || s.stop;
     };
 
@@ -446,6 +447,9 @@ export class Gemini {
     let waits = 0;
     while (true) {
       const s = await this.#snapshot();
+      if (looksLikeLimit(s.pageError)) {
+        return { full: '', prose: '', blocks: [], limit: true, pageError: s.pageError };
+      }
       if (s.assistantCount > before.assistantCount || s.stop || (s.text.trim() && s.text !== before.text)) break;
       if (++waits % 4 === 0) {
         console.log(
@@ -484,6 +488,9 @@ export class Gemini {
       await sleep(700);
       const s = await this.#snapshot();
       const cur = isNew(s) ? s.text : '';
+      if (!cur && looksLikeLimit(s.pageError)) {
+        return { full: '', prose: '', blocks: [], limit: true, pageError: s.pageError };
+      }
       if (++ticks % 7 === 0) {
         console.log(
           `   [debug] generando=${s.stop} · caracteres de respuesta=${cur.length} · estable=${stable} · ` +
@@ -547,7 +554,7 @@ export class Gemini {
 
     const hasActions = final.blocks.some((b) => b.includes('@@@')) || final.full.includes('@@@');
     const limit =
-      looksLikeLimit(pageError2) || (!hasActions && final.full.length < 800 && looksLikeLimit(final.full));
+      !hasActions && (looksLikeLimit(pageError2) || (final.full.length < 800 && looksLikeLimit(final.full)));
 
     return { full: final.full, prose: final.prose, blocks: final.blocks, limit, pageError: pageError2 };
   }

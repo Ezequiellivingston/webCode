@@ -1,12 +1,14 @@
 // Router heurístico: elige el proveedor que mejor encaja con la tarea y el contexto.
 // No es magia: combina palabras clave de la tarea con el tamaño del contexto real.
 
-export const PROVIDER_ORDER = ['chatgpt', 'gemini', 'claude', 'deepseek'];
+// Orden de preferencia para desempates: Gemini queda último salvo que el
+// contexto sea enorme o la tarea sea claramente visual.
+export const PROVIDER_ORDER = ['chatgpt', 'claude', 'deepseek', 'gemini'];
 
 const SIGNALS = [
   {
     tag: 'code',
-    re: /\b(api|endpoint|funci[oó]n|componente|react|vue|angular|node|python|typescript|javascript|java|c#|php|sql|docker|backend|frontend|cli|script|programa)\b/i,
+    re: /\b(api|endpoint|funci[oó]n|componente|react|vue|angular|node|python|typescript|javascript|java|c#|php|sql|docker|backend|frontend|cli|script|programa|implementa|implementar|implement|construir|construye|desarrolla|desarrollar|crear|crea)\b/i,
     points: { claude: 2, chatgpt: 2, deepseek: 2, gemini: 1 },
   },
   {
@@ -70,23 +72,19 @@ export function analyzeTask({ task = '', specText = '', tree = '', messageChars 
 
   const estimated = tree.length + specText.length + messageChars;
   let sizeNote = '';
-  if (estimated > 400000) {
+  if (estimated > 500000) {
     points.gemini += 8;
     points.claude += 2;
-    sizeNote = 'contexto enorme (>400k)';
-  } else if (estimated > 150000) {
+    sizeNote = 'contexto enorme (>500k)';
+  } else if (estimated > 250000) {
     points.gemini += 5;
     points.claude += 1;
-    sizeNote = 'contexto grande (>150k)';
-  } else if (estimated > 60000) {
-    points.gemini += 2;
-    sizeNote = 'contexto mediano (>60k)';
+    sizeNote = 'contexto grande (>250k)';
+  } else if (estimated > 100000) {
+    points.gemini += 1;
+    sizeNote = 'contexto mediano (>100k)';
   }
-  if (specText) {
-    points.gemini += 2;
-    points.claude += 1;
-    tags.push('spec');
-  }
+  if (specText) tags.push('spec');
 
   return { tags, points, estimated, sizeNote };
 }

@@ -211,4 +211,7 @@ Desde GitHub se instala con `npm install -g github:USUARIO/webcode` (no con `npm
 - Automatizar la interfaz web puede ir contra los términos de uso de OpenAI y puede dispararle límites de uso o captchas. Úsalo bajo tu responsabilidad y con tu propia cuenta.
 - Respuestas muy largas pueden cortarse; si pasa, el agente avisa del bloque truncado y ChatGPT lo reenvía.
 - ChatGPT puede ignorar el formato a veces; el programa reintenta hasta 2 veces.
+- Si el modelo mete líneas del protocolo (`@@@ run`, `@@@ done`, etc.) dentro del contenido de un archivo, `webcode` las quita y le avisa al modelo; si detecta un `@@@ write_file`/`@@@ edit_file` anidado, rechaza la acción para que la reenvíe bien.
+- Si un `write_file`/`edit_file` deja el archivo **idéntico**, se marca como error: el modelo no puede cerrar con `@@@ done` sin haber cambiado nada.
+- Si el proveedor responde varias veces sin acciones válidas, `webcode` muestra un extracto y cambia automáticamente al siguiente proveedor antes de abortar.
 - Probado contra la UI nueva de ChatGPT (Codex/Work) y la clásica. Si vuelve a cambiar el DOM, el programa guarda `debug-dom.json`; con eso se ajustan los selectores de `src/chatgpt.js`.

@@ -217,6 +217,13 @@ export class ProviderManager {
     return this.instance.newChat();
   }
 
+  // Público para que el agente pueda abandonar un proveedor que no sigue el formato.
+  async switchNextProvider(reason) {
+    if (!this.hasNext) return false;
+    await this.#switchNext(reason || 'no siguió el formato esperado', 'RESPONSE');
+    return true;
+  }
+
   // Cambia el proveedor activo (usado por el router antes de empezar una tarea).
   async switchTo(name) {
     const target = normalizeProvider(name);

@@ -35,7 +35,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Frases típicas de límite de contexto/cuota o errores de envío.
 const LIMIT_RE =
-  /(you'?ve reached|has reached|reached (the|your)|demasiado largo|too long|maximum context|context length|l[ií]mite (de|del|alcanzado)|usage limit|message limit|start a new chat|inicia un chat nuevo|abre un chat nuevo|conversation is too long|no puedo continuar|can'?t continue|capacity|cuota|no se pudo enviar)/i;
+  /(you'?ve reached|has reached|reached (the|your)|demasiado largo|too long|maximum context|context length|context window (is )?full|window is full|ventana de contexto llena|contexto lleno|ventana llena|l[ií]mite de contexto|l[ií]mite (de|del|alcanzado)|usage limit|message limit|start a new chat|inicia un chat nuevo|abre un chat nuevo|conversation is too long|no puedo continuar|can'?t continue|capacity|cuota|no se pudo enviar)/i;
 
 const looksLikeLimit = (text) => !!text && LIMIT_RE.test(text);
 
@@ -500,6 +500,7 @@ export class ChatGPT {
       if (busy) throw fail(`ChatGPT pidió esperar: ${busy}`, 'BUSY');
       const tooLong = looksTooLong(s.pageError) || (await this.#tooLongError());
       if (tooLong) throw fail(`ChatGPT rechazó el mensaje: ${tooLong}`, 'TOO_LONG');
+      if (looksLikeLimit(s.pageError)) return true;
       return (await composerLen()) === 0 || s.assistantCount > before || s.stop;
     };
 
@@ -552,6 +553,9 @@ export class ChatGPT {
     let waits = 0;
     while (true) {
       const s = await this.#snapshot();
+      if (looksLikeLimit(s.pageError)) {
+        return { full: '', prose: '', blocks: [], limit: true, pageError: s.pageError };
+      }
       if (s.assistantCount > before.assistantCount || s.stop || (s.text.trim() && s.text !== before.text)) {
         break;
       }
@@ -594,6 +598,9 @@ export class ChatGPT {
       await sleep(700);
       const s = await this.#snapshot();
       const cur = isNew(s) ? s.text : '';
+      if (!cur && looksLikeLimit(s.pageError)) {
+        return { full: '', prose: '', blocks: [], limit: true, pageError: s.pageError };
+      }
       if (++ticks % 7 === 0) {
         console.log(
           `   [debug] generando=${s.stop} · caracteres de respuesta=${cur.length} · estable=${stable} · ` +
@@ -652,7 +659,7 @@ export class ChatGPT {
 
     const hasActions = final.blocks.some((b) => b.includes('@@@')) || final.full.includes('@@@');
     const limit =
-      looksLikeLimit(pageError) || (!hasActions && final.full.length < 800 && looksLikeLimit(final.full));
+      !hasActions && (looksLikeLimit(pageError) || (final.full.length < 800 && looksLikeLimit(final.full)));
 
     return { full: final.full, prose: final.prose, blocks: final.blocks, limit, pageError };
   }

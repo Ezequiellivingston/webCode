@@ -92,7 +92,19 @@ export async function runAgent({
 
     const actions = parseActions(reply.blocks, reply.full);
     if (!actions.length) {
+      const preview = (reply.full || reply.prose || '').trim().replace(/\s+/g, ' ').slice(0, 180);
+      log(`   (respuesta sin acciones: ${preview || '(vacía)'}...)`);
       if (++emptyReplies > 2) throw new Error('El proveedor no devolvió acciones válidas.');
+      if (
+        emptyReplies === 2 &&
+        typeof gpt.switchNextProvider === 'function' &&
+        gpt.hasNext
+      ) {
+        log(`   ↻ ${gpt.label || 'el proveedor'} no siguió el formato → cambio de proveedor`);
+        await gpt.switchNextProvider('no devolvió acciones válidas');
+        await rotate('');
+        continue;
+      }
       message = buildNoActions();
       continue;
     }

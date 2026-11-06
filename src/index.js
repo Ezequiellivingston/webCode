@@ -4,7 +4,7 @@ import readline from 'node:readline/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ProviderManager, normalizeProvider, PROVIDERS } from './provider.js';
-import { chooseProviders, PROVIDER_ORDER } from './router.js';
+import { chooseProviders } from './router.js';
 import { probeProviders } from './probe.js';
 import { parseActions, execute, listTree } from './tools.js';
 import {
@@ -135,9 +135,9 @@ if (autoProvider) {
     console.error(c.red(e.message));
     process.exit(1);
   }
-  fallback = explicitFallback
-    ? parseFallback(rawFallbackArg)
-    : PROVIDER_ORDER.find((n) => n !== provider) || '';
+  // Para código, el mejor respaldo suele ser Claude/ChatGPT; Gemini queda último.
+  const DEFAULT_FALLBACK = { chatgpt: 'claude', claude: 'chatgpt', gemini: 'chatgpt', deepseek: 'claude' };
+  fallback = explicitFallback ? parseFallback(rawFallbackArg) : DEFAULT_FALLBACK[provider] || '';
 }
 
 if (flag('--probe')) {
@@ -368,9 +368,21 @@ async function runTask(task) {
 
     const actions = parseActions(reply.blocks, reply.full);
     if (!actions.length) {
+      const preview = (reply.full || reply.prose || '').trim().replace(/\s+/g, ' ').slice(0, 180);
+      console.log(c.dim(`   (respuesta sin acciones: ${preview || '(vacía)'}...)`));
       if (++emptyReplies > 2) {
         console.log(c.red('✘ El proveedor no devolvió acciones válidas. Abortando tarea.'));
         return;
+      }
+      if (emptyReplies === 2 && gpt.hasNext) {
+        console.log(c.dim(`↻ ${gpt.label} no siguió el formato; cambiando de proveedor...`));
+        try {
+          await gpt.switchNextProvider('no devolvió acciones válidas');
+          firstTurn = false;
+          stepsSinceRotate = rotateAfter; // fuerza resumen + chat nuevo en el próximo envío
+        } catch (e) {
+          console.log(c.dim(`   no pude cambiar de proveedor: ${e.message}`));
+        }
       }
       message = buildNoActions();
       continue;
